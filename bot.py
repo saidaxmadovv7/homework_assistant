@@ -4,6 +4,7 @@ pyTelegramBotAPI versiyasi - Python 3.14 bilan ishlaydi
 """
 
 import telebot
+import requests
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import os
@@ -16,6 +17,8 @@ load_dotenv()
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DB_PATH = "schoolbot.db"
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -68,7 +71,8 @@ def main_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("➕ Add Homework"), KeyboardButton("📋 View Homework"))
     kb.row(KeyboardButton("📅 Today's Tasks"), KeyboardButton("⏰ Set Reminder"))
-    kb.row(KeyboardButton("🏆 Leaderboard"),   KeyboardButton("ℹ️ Help"))
+    kb.row(KeyboardButton("🤖 AI Yordam"),     KeyboardButton("🏆 Leaderboard"))
+    kb.row(KeyboardButton("ℹ️ Help"))
     return kb
 
 
@@ -465,10 +469,58 @@ def fsm_router(msg):
             dt = datetime.strptime(msg.text.strip(), "%d.%m.%Y")
             deadline = dt.strftime("%Y-%m-%d")
             _save_homework(msg.from_user, chat_id, deadline)
+
+    elif step == "ai_question":
+        user_state.pop(uid, None)
+        sent = bot.send_message(chat_id, "🤔 Oylayapman...")
+        answer = ask_gemini(msg.text)
+        bot.edit_message_text(f"🤖 <b>AI Javobi:</b>\n\n{answer}",
+                              chat_id, sent.message_id, parse_mode="HTML")
+
         except ValueError:
             bot.send_message(chat_id, "⚠️ Noto'g'ri format. <b>KK.OO.YYYY</b> ko'rinishida kiriting:",
                              parse_mode="HTML")
 
+
+
+# ─── Gemini AI ───────────────────────────────────────────────────────────────
+
+def ask_gemini(question: str) -> str:
+    if not GEMINI_API_KEY:
+        return "⚠️ Gemini API key sozlanmagan."
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{"parts": [{"text": (
+                "Sen maktab oquvchilariga yordam beradigan AI assistantsan. "
+                "Savolga qisqa, aniq va tushunarli javob ber. "
+                "Imkon bolsa uzbek tilida javob ber.\n\n"
+                f"Savol: {question}"
+            )}]}]
+        }
+        resp = requests.post(url, json=payload, timeout=30)
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return f"Xatolik: {str(e)}"
+
+
+@bot.message_handler(func=lambda m: m.text == "🤖 AI Yordam")
+def ai_help_prompt(msg):
+    bot.send_message(msg.chat.id,
+        "🤖 <b>AI Yordam</b>\n\nSavolingizni yozing!\n\n"
+        "<i>Misol: Pifagor teoremasi nima?</i>",
+        parse_mode="HTML")
+    user_state[msg.from_user.id] = {"step": "ai_question", "chat_id": msg.chat.id, "data": {}}
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/ai "))
+def ai_command(msg):
+    question = msg.text[4:].strip()
+    sent = bot.send_message(msg.chat.id, "🤔 Oylayapman...")
+    answer = ask_gemini(question)
+    bot.edit_message_text(f"🤖 <b>AI Javobi:</b>\n\n{answer}",
+                          msg.chat.id, sent.message_id, parse_mode="HTML")
 
 # ─── Reminder Scheduler (background thread) ──────────────────────────────────
 
