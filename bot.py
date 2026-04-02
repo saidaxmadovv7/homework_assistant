@@ -1,77 +1,62 @@
 """
-📚 SchoolBot - Telegram Homework Manager
-pyTelegramBotAPI versiyasi - Python 3.14 bilan ishlaydi
+📚 SchoolBot - Telegram Homework Manager + Gemini AI
 """
 
 import telebot
 import requests
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import os
 import threading
 import time
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─── Config ──────────────────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DB_PATH = "schoolbot.db"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+user_state = {}
 
-# ─── Database ────────────────────────────────────────────────────────────────
+
+# ─── Database ─────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS homework (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id     INTEGER NOT NULL,
-        username    TEXT,
-        subject     TEXT NOT NULL,
-        description TEXT NOT NULL,
-        deadline    TEXT,
-        is_done     INTEGER DEFAULT 0,
-        created_at  TEXT NOT NULL
-    )""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, username TEXT,
+        subject TEXT, description TEXT,
+        deadline TEXT, is_done INTEGER DEFAULT 0,
+        created_at TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS group_settings (
-        chat_id         INTEGER PRIMARY KEY,
-        reminder_hour   INTEGER DEFAULT 20,
+        chat_id INTEGER PRIMARY KEY,
+        reminder_hour INTEGER DEFAULT 20,
         reminder_minute INTEGER DEFAULT 0,
-        reminders_on    INTEGER DEFAULT 1
-    )""")
+        reminders_on INTEGER DEFAULT 1)""")
     c.execute("""CREATE TABLE IF NOT EXISTS activity (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id    INTEGER NOT NULL,
-        user_id    INTEGER NOT NULL,
-        username   TEXT,
-        created_at TEXT NOT NULL
-    )""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, user_id INTEGER,
+        username TEXT, created_at TEXT)""")
     conn.commit()
     conn.close()
 
 
 def db():
-    """Return a new DB connection."""
     return sqlite3.connect(DB_PATH)
 
 
-# ─── User state (for multi-step input) ───────────────────────────────────────
-# {user_id: {"step": ..., "data": {...}}}
-user_state = {}
-
-
-# ─── Keyboards ───────────────────────────────────────────────────────────────
+# ─── Keyboards ────────────────────────────────────────────────────────────────
 
 def main_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("➕ Add Homework"), KeyboardButton("📋 View Homework"))
     kb.row(KeyboardButton("📅 Today's Tasks"), KeyboardButton("⏰ Set Reminder"))
-    kb.row(KeyboardButton("🤖 AI Yordam"),     KeyboardButton("🏆 Leaderboard"))
+    kb.row(KeyboardButton("🤖 AI Yordam"), KeyboardButton("🏆 Leaderboard"))
     kb.row(KeyboardButton("ℹ️ Help"))
     return kb
 
@@ -81,6 +66,7 @@ SUBJECTS = [
     "🗣️ English", "💻 IT/CS", "🎨 Art", "🏃 PE",
     "🧪 Chemistry", "⚗️ Physics", "📜 History", "🎵 Music",
 ]
+
 
 def subject_keyboard():
     kb = InlineKeyboardMarkup(row_width=3)
@@ -95,24 +81,23 @@ def deadline_keyboard():
     today = datetime.now()
     kb = InlineKeyboardMarkup(row_width=2)
     options = [
-        ("📅 Today",     today.strftime("%Y-%m-%d")),
-        ("📅 Tomorrow",  (today + timedelta(days=1)).strftime("%Y-%m-%d")),
+        ("📅 Today", today.strftime("%Y-%m-%d")),
+        ("📅 Tomorrow", (today + timedelta(days=1)).strftime("%Y-%m-%d")),
         ("📅 In 2 days", (today + timedelta(days=2)).strftime("%Y-%m-%d")),
         ("📅 In 3 days", (today + timedelta(days=3)).strftime("%Y-%m-%d")),
         ("📅 Next week", (today + timedelta(days=7)).strftime("%Y-%m-%d")),
-        ("⏭️ No deadline","none"),
+        ("⏭️ No deadline", "none"),
     ]
-    kb.add(*[InlineKeyboardButton(label, callback_data=f"dl|{date}") for label, date in options])
+    kb.add(*[InlineKeyboardButton(l, callback_data=f"dl|{d}") for l, d in options])
     kb.add(InlineKeyboardButton("✏️ Enter date manually", callback_data="dl|custom"))
     return kb
 
 
 def reminder_keyboard():
     kb = InlineKeyboardMarkup(row_width=3)
-    times = [("17:00","17:00"),("18:00","18:00"),("19:00","19:00"),
-             ("20:00","20:00"),("21:00","21:00"),("22:00","22:00")]
-    kb.add(*[InlineKeyboardButton(t, callback_data=f"rt|{t}") for t, _ in times])
-    kb.add(InlineKeyboardButton("🔕 Disable reminders", callback_data="rt|off"))
+    times = ["17:00", "18:00", "19:00", "20:00", "21:00", "22:00"]
+    kb.add(*[InlineKeyboardButton(t, callback_data=f"rt|{t}") for t in times])
+    kb.add(InlineKeyboardButton("🔕 Disable", callback_data="rt|off"))
     return kb
 
 
@@ -124,7 +109,7 @@ def hw_action_keyboard(hw_id, is_done=False):
     return kb
 
 
-# ─── Formatters ──────────────────────────────────────────────────────────────
+# ─── Formatters ───────────────────────────────────────────────────────────────
 
 def fmt_deadline(deadline):
     if not deadline:
@@ -133,7 +118,7 @@ def fmt_deadline(deadline):
         dt = datetime.strptime(deadline, "%Y-%m-%d")
         delta = (dt.date() - datetime.now().date()).days
         fmt = dt.strftime("%d %b %Y")
-        if delta < 0:   return f"⚠️ Overdue ({fmt})"
+        if delta < 0:    return f"⚠️ Overdue ({fmt})"
         elif delta == 0: return f"🔴 Due today! ({fmt})"
         elif delta == 1: return f"🟡 Tomorrow ({fmt})"
         elif delta <= 3: return f"🟠 In {delta} days ({fmt})"
@@ -148,7 +133,7 @@ def fmt_hw(hw):
             f"   {fmt_deadline(hw[5])} · by {hw[2] or 'unknown'}")
 
 
-# ─── Database helpers ─────────────────────────────────────────────────────────
+# ─── DB Helpers ───────────────────────────────────────────────────────────────
 
 def add_hw(chat_id, user_id, username, subject, description, deadline):
     with db() as conn:
@@ -218,8 +203,7 @@ def save_reminder(chat_id, hour, minute):
     with db() as conn:
         c = conn.cursor()
         c.execute("""INSERT INTO group_settings (chat_id,reminder_hour,reminder_minute,reminders_on)
-                     VALUES (?,?,?,1)
-                     ON CONFLICT(chat_id) DO UPDATE SET
+                     VALUES (?,?,?,1) ON CONFLICT(chat_id) DO UPDATE SET
                      reminder_hour=excluded.reminder_hour,
                      reminder_minute=excluded.reminder_minute,
                      reminders_on=1""", (chat_id, hour, minute))
@@ -249,12 +233,38 @@ def all_settings():
         return c.fetchall()
 
 
+# ─── Gemini AI ────────────────────────────────────────────────────────────────
+
+def ask_gemini(question):
+    if not GEMINI_API_KEY:
+        return "⚠️ GEMINI_API_KEY sozlanmagan."
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": (
+                        "Sen maktab o'quvchilariga yordam beradigan AI assistantsan. "
+                        "Savolga qisqa, aniq va tushunarli javob ber. "
+                        "Imkon bo'lsa o'zbek tilida javob ber.\n\n"
+                        f"Savol: {question}"
+                    )
+                }]
+            }]
+        }
+        resp = requests.post(url, json=payload, timeout=30)
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return f"⚠️ Xatolik: {str(e)}"
+
+
 # ─── Handlers ─────────────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
-    name = msg.from_user.first_name or "Student"
-    get_settings(msg.chat.id)  # init settings
+    get_settings(msg.chat.id)
+    name = msg.from_user.first_name or "O'quvchi"
     bot.send_message(msg.chat.id,
         f"👋 Salom <b>{name}</b>! <b>SchoolBot</b> ga xush kelibsiz!\n\n"
         "Darslarni boshqarish uchun quyidagi tugmalardan foydalaning 👇",
@@ -269,12 +279,11 @@ def cmd_help(msg):
         "📋 <b>View Homework</b> — Barcha darslarni ko'rish\n"
         "📅 <b>Today's Tasks</b> — Bugungi darslar\n"
         "⏰ <b>Set Reminder</b> — Eslatma vaqtini belgilash\n"
+        "🤖 <b>AI Yordam</b> — AI dan savol so'rash\n"
         "🏆 <b>Leaderboard</b> — Eng faol o'quvchilar\n\n"
         "<i>Guruhga qo'shib ishlatish yanada qulay!</i>",
         parse_mode="HTML", reply_markup=main_menu())
 
-
-# ─── Add Homework ─────────────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "➕ Add Homework")
 def add_homework_start(msg):
@@ -283,72 +292,11 @@ def add_homework_start(msg):
                      parse_mode="HTML", reply_markup=subject_keyboard())
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("subj|"))
-def subject_chosen(call):
-    uid = call.from_user.id
-    subject = call.data.split("|", 1)[1]
-
-    if subject == "custom":
-        user_state[uid] = {**user_state.get(uid, {}), "step": "subject_custom",
-                           "data": {}, "chat_id": call.message.chat.id}
-        bot.edit_message_text("✏️ Fan nomini yozing:", call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id)
-        return
-
-    state = user_state.get(uid, {})
-    state["data"]["subject"] = subject
-    state["step"] = "description"
-    user_state[uid] = state
-
-    bot.edit_message_text(
-        f"✅ Fan: <b>{subject}</b>\n\n📝 <b>2/3 — Dars tavsifini yozing:</b>\n"
-        f"<i>Misol: 12-mashq, 45-bet</i>",
-        call.message.chat.id, call.message.message_id, parse_mode="HTML")
-    bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("dl|"))
-def deadline_chosen(call):
-    uid = call.from_user.id
-    value = call.data.split("|", 1)[1]
-
-    if value == "custom":
-        user_state[uid]["step"] = "deadline_custom"
-        bot.edit_message_text("✏️ Sanani kiriting <b>KK.OO.YYYY</b> formatida:\n<i>Misol: 15.06.2025</i>",
-                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-        return
-
-    deadline = None if value == "none" else value
-    _save_homework(call.from_user, call.message.chat.id, deadline, call.message)
-    bot.answer_callback_query(call.id)
-
-
-def _save_homework(user, chat_id, deadline, edit_msg=None):
-    uid = user.id
-    state = user_state.pop(uid, {})
-    data = state.get("data", {})
-    username = f"@{user.username}" if user.username else user.first_name
-
-    hw_id = add_hw(chat_id, uid, username, data["subject"], data["description"], deadline)
-    dl_label = f" ({deadline})" if deadline else ""
-    text = (f"✅ <b>Dars qo'shildi!</b> #{hw_id}\n\n"
-            f"📚 <b>{data['subject']}</b>{dl_label}\n{data['description']}\n\n"
-            f"<i>Bu chatdagi barcha o'quvchilar ko'ra oladi.</i>")
-
-    if edit_msg:
-        bot.edit_message_text(text, edit_msg.chat.id, edit_msg.message_id, parse_mode="HTML")
-    else:
-        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu())
-
-
-# ─── View Homework ────────────────────────────────────────────────────────────
-
 @bot.message_handler(func=lambda m: m.text == "📋 View Homework")
 def view_homework(msg):
     items = get_hw(msg.chat.id)
     if not items:
-        bot.send_message(msg.chat.id, "✅ <b>Barcha darslar bajarilgan!</b>", parse_mode="HTML")
+        bot.send_message(msg.chat.id, "✅ <b>Hozircha dars yo'q!</b>", parse_mode="HTML")
         return
     bot.send_message(msg.chat.id, f"📋 <b>Kutilayotgan darslar ({len(items)} ta):</b>", parse_mode="HTML")
     for hw in items:
@@ -368,7 +316,87 @@ def today_tasks(msg):
                          reply_markup=hw_action_keyboard(hw[0]))
 
 
-# ─── Homework Actions ─────────────────────────────────────────────────────────
+@bot.message_handler(func=lambda m: m.text == "⏰ Set Reminder")
+def set_reminder(msg):
+    s = get_settings(msg.chat.id)
+    status = "🟢 Yoqilgan" if s[3] else "🔴 O'chirilgan"
+    bot.send_message(msg.chat.id,
+        f"⏰ <b>Eslatma sozlamalari</b>\n\nHolat: {status}\nVaqt: <b>{s[1]:02d}:{s[2]:02d}</b>\n\nVaqt tanlang:",
+        parse_mode="HTML", reply_markup=reminder_keyboard())
+
+
+@bot.message_handler(func=lambda m: m.text == "🤖 AI Yordam")
+def ai_help(msg):
+    user_state[msg.from_user.id] = {"step": "ai_question", "chat_id": msg.chat.id, "data": {}}
+    bot.send_message(msg.chat.id,
+        "🤖 <b>AI Yordam</b>\n\nSavolingizni yozing, javob beraman!\n\n"
+        "<i>Misol: Pifagor teoremasi nima?</i>",
+        parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda m: m.text == "🏆 Leaderboard")
+def leaderboard(msg):
+    entries = get_leaderboard(msg.chat.id)
+    if not entries:
+        bot.send_message(msg.chat.id, "🏆 <b>Hali faollik yo'q!</b>", parse_mode="HTML")
+        return
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    lines = ["🏆 <b>Eng faol o'quvchilar:</b>\n"]
+    for i, (name, cnt) in enumerate(entries):
+        lines.append(f"{medals[i]} {name} — <b>{cnt}</b> ta dars qo'shgan")
+    bot.send_message(msg.chat.id, "\n".join(lines), parse_mode="HTML")
+
+
+# ─── Callback Handlers ────────────────────────────────────────────────────────
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("subj|"))
+def subject_chosen(call):
+    uid = call.from_user.id
+    subject = call.data.split("|", 1)[1]
+    if subject == "custom":
+        user_state[uid] = {"step": "subject_custom", "data": {}, "chat_id": call.message.chat.id}
+        bot.edit_message_text("✏️ Fan nomini yozing:", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id)
+        return
+    state = user_state.get(uid, {"data": {}, "chat_id": call.message.chat.id})
+    state["data"]["subject"] = subject
+    state["step"] = "description"
+    user_state[uid] = state
+    bot.edit_message_text(
+        f"✅ Fan: <b>{subject}</b>\n\n📝 <b>2/3 — Dars tavsifini yozing:</b>\n<i>Misol: 12-mashq, 45-bet</i>",
+        call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("dl|"))
+def deadline_chosen(call):
+    uid = call.from_user.id
+    value = call.data.split("|", 1)[1]
+    if value == "custom":
+        user_state[uid]["step"] = "deadline_custom"
+        bot.edit_message_text("✏️ Sanani kiriting <b>KK.OO.YYYY</b>:\n<i>Misol: 15.06.2025</i>",
+                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+        return
+    deadline = None if value == "none" else value
+    save_homework(call.from_user, call.message.chat.id, deadline, call.message)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("rt|"))
+def reminder_time(call):
+    value = call.data.split("|")[1]
+    if value == "off":
+        disable_reminders(call.message.chat.id)
+        bot.edit_message_text("🔕 <b>Eslatmalar o'chirildi.</b>",
+                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    else:
+        h, m = map(int, value.split(":"))
+        save_reminder(call.message.chat.id, h, m)
+        bot.edit_message_text(f"✅ <b>Eslatma {value} ga belgilandi!</b>",
+                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("done|"))
 def mark_done(call):
@@ -393,55 +421,12 @@ def delete_hw(call):
 
 @bot.callback_query_handler(func=lambda c: c.data == "cancel")
 def cancel(call):
-    uid = call.from_user.id
-    user_state.pop(uid, None)
+    user_state.pop(call.from_user.id, None)
     bot.delete_message(call.message.chat.id, call.message.message_id)
     bot.answer_callback_query(call.id, "Bekor qilindi")
 
 
-# ─── Reminders ────────────────────────────────────────────────────────────────
-
-@bot.message_handler(func=lambda m: m.text == "⏰ Set Reminder")
-def set_reminder(msg):
-    s = get_settings(msg.chat.id)
-    status = "🟢 Yoqilgan" if s[3] else "🔴 O'chirilgan"
-    bot.send_message(msg.chat.id,
-        f"⏰ <b>Eslatma sozlamalari</b>\n\nHolat: {status}\nVaqt: <b>{s[1]:02d}:{s[2]:02d}</b>\n\n"
-        "Yangi vaqt tanlang:",
-        parse_mode="HTML", reply_markup=reminder_keyboard())
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("rt|"))
-def reminder_time(call):
-    value = call.data.split("|")[1]
-    if value == "off":
-        disable_reminders(call.message.chat.id)
-        bot.edit_message_text("🔕 <b>Eslatmalar o'chirildi.</b>",
-                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
-    else:
-        h, m = map(int, value.split(":"))
-        save_reminder(call.message.chat.id, h, m)
-        bot.edit_message_text(f"✅ <b>Eslatma {value} ga belgilandi!</b>\nHar kecha uyga vazifalar haqida xabar beraman.",
-                              call.message.chat.id, call.message.message_id, parse_mode="HTML")
-    bot.answer_callback_query(call.id)
-
-
-# ─── Leaderboard ─────────────────────────────────────────────────────────────
-
-@bot.message_handler(func=lambda m: m.text == "🏆 Leaderboard")
-def leaderboard(msg):
-    entries = get_leaderboard(msg.chat.id)
-    if not entries:
-        bot.send_message(msg.chat.id, "🏆 <b>Leaderboard</b>\n\nHali faollik yo'q!", parse_mode="HTML")
-        return
-    medals = ["🥇","🥈","🥉","4️⃣","5️⃣"]
-    lines = ["🏆 <b>Eng faol o'quvchilar:</b>\n"]
-    for i, (name, cnt) in enumerate(entries):
-        lines.append(f"{medals[i]} {name} — <b>{cnt}</b> ta dars qo'shgan")
-    bot.send_message(msg.chat.id, "\n".join(lines), parse_mode="HTML")
-
-
-# ─── Text message router (FSM) ────────────────────────────────────────────────
+# ─── FSM Text Router ──────────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.from_user.id in user_state)
 def fsm_router(msg):
@@ -454,8 +439,9 @@ def fsm_router(msg):
         state["data"]["subject"] = msg.text.strip()
         state["step"] = "description"
         user_state[uid] = state
-        bot.send_message(chat_id, f"✅ Fan: <b>{msg.text.strip()}</b>\n\n📝 <b>2/3 — Tavsifni yozing:</b>",
-                         parse_mode="HTML")
+        bot.send_message(chat_id,
+            f"✅ Fan: <b>{msg.text.strip()}</b>\n\n📝 <b>2/3 — Tavsifni yozing:</b>",
+            parse_mode="HTML")
 
     elif step == "description":
         state["data"]["description"] = msg.text.strip()
@@ -468,61 +454,38 @@ def fsm_router(msg):
         try:
             dt = datetime.strptime(msg.text.strip(), "%d.%m.%Y")
             deadline = dt.strftime("%Y-%m-%d")
-            _save_homework(msg.from_user, chat_id, deadline)
+            save_homework(msg.from_user, chat_id, deadline)
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ Noto'g'ri format. <b>KK.OO.YYYY</b>:", parse_mode="HTML")
 
     elif step == "ai_question":
         user_state.pop(uid, None)
-        sent = bot.send_message(chat_id, "🤔 Oylayapman...")
+        sent = bot.send_message(chat_id, "🤔 O'ylamoqda...")
         answer = ask_gemini(msg.text)
-        bot.edit_message_text(f"🤖 <b>AI Javobi:</b>\n\n{answer}",
-                              chat_id, sent.message_id, parse_mode="HTML")
-
-        except ValueError:
-            bot.send_message(chat_id, "⚠️ Noto'g'ri format. <b>KK.OO.YYYY</b> ko'rinishida kiriting:",
-                             parse_mode="HTML")
+        bot.edit_message_text(
+            f"🤖 <b>AI Javobi:</b>\n\n{answer}",
+            chat_id, sent.message_id, parse_mode="HTML")
 
 
+# ─── Save Homework Helper ─────────────────────────────────────────────────────
 
-# ─── Gemini AI ───────────────────────────────────────────────────────────────
-
-def ask_gemini(question: str) -> str:
-    if not GEMINI_API_KEY:
-        return "⚠️ Gemini API key sozlanmagan."
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{"parts": [{"text": (
-                "Sen maktab oquvchilariga yordam beradigan AI assistantsan. "
-                "Savolga qisqa, aniq va tushunarli javob ber. "
-                "Imkon bolsa uzbek tilida javob ber.\n\n"
-                f"Savol: {question}"
-            )}]}]
-        }
-        resp = requests.post(url, json=payload, timeout=30)
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        return f"Xatolik: {str(e)}"
+def save_homework(user, chat_id, deadline, edit_msg=None):
+    uid = user.id
+    state = user_state.pop(uid, {})
+    data = state.get("data", {})
+    username = f"@{user.username}" if user.username else user.first_name
+    hw_id = add_hw(chat_id, uid, username, data["subject"], data["description"], deadline)
+    dl_label = f" ({deadline})" if deadline else ""
+    text = (f"✅ <b>Dars qo'shildi!</b> #{hw_id}\n\n"
+            f"📚 <b>{data['subject']}</b>{dl_label}\n{data['description']}\n\n"
+            f"<i>Barcha o'quvchilar ko'ra oladi.</i>")
+    if edit_msg:
+        bot.edit_message_text(text, edit_msg.chat.id, edit_msg.message_id, parse_mode="HTML")
+    else:
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu())
 
 
-@bot.message_handler(func=lambda m: m.text == "🤖 AI Yordam")
-def ai_help_prompt(msg):
-    bot.send_message(msg.chat.id,
-        "🤖 <b>AI Yordam</b>\n\nSavolingizni yozing!\n\n"
-        "<i>Misol: Pifagor teoremasi nima?</i>",
-        parse_mode="HTML")
-    user_state[msg.from_user.id] = {"step": "ai_question", "chat_id": msg.chat.id, "data": {}}
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("/ai "))
-def ai_command(msg):
-    question = msg.text[4:].strip()
-    sent = bot.send_message(msg.chat.id, "🤔 Oylayapman...")
-    answer = ask_gemini(question)
-    bot.edit_message_text(f"🤖 <b>AI Javobi:</b>\n\n{answer}",
-                          msg.chat.id, sent.message_id, parse_mode="HTML")
-
-# ─── Reminder Scheduler (background thread) ──────────────────────────────────
+# ─── Reminder Scheduler ───────────────────────────────────────────────────────
 
 def reminder_loop():
     while True:
@@ -535,7 +498,7 @@ def reminder_loop():
                     lines = [f"📌 <b>{hw[3]}</b>: {hw[4]}" for hw in items]
                     text = "🌙 <b>Kechki eslatma</b> — ertangi darslar:\n\n" + "\n".join(lines) + "\n\n💪 Omad!"
                 else:
-                    text = "🌙 <b>Kechki eslatma</b>\n\n✅ Ertaga uchun dars yo'q! Yaxshi dam oling 🎉"
+                    text = "🌙 <b>Kechki eslatma</b>\n\n✅ Ertaga dars yo'q! Yaxshi dam oling 🎉"
                 try:
                     bot.send_message(chat_id, text, parse_mode="HTML")
                 except:
@@ -543,16 +506,13 @@ def reminder_loop():
         time.sleep(60)
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     init_db()
     print("✅ Database tayyor")
-
-    # Start reminder thread
     t = threading.Thread(target=reminder_loop, daemon=True)
     t.start()
     print("✅ Eslatma tizimi ishga tushdi")
-
     print("🚀 SchoolBot ishlamoqda...")
     bot.infinity_polling()
